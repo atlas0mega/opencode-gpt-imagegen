@@ -1,6 +1,7 @@
 {
   "name": "opencode-gpt-imagegen",
-  "version": "0.1.12",
+  "version": "0.1.12-atlas.1",
+  "private": true,
   "description": "OpenCode plugin for GPT Image 2 generation through your ChatGPT subscription, with reference images and safe PNG output.",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,6 +12,9 @@
   },
   "files": [
     "dist",
+    "scripts/blender_asset.py",
+    "skills",
+    "SECURITY-REVIEW.md",
     "README.md",
     "LICENSE"
   ],
@@ -46,11 +50,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yuji-hatakeyama/opencode-gpt-imagegen.git"
+    "url": "git+https://github.com/atlas0mega/opencode-gpt-imagegen.git"
   },
-  "homepage": "https://github.com/yuji-hatakeyama/opencode-gpt-imagegen#readme",
+  "homepage": "https://github.com/atlas0mega/opencode-gpt-imagegen#readme",
   "bugs": {
-    "url": "https://github.com/yuji-hatakeyama/opencode-gpt-imagegen/issues"
+    "url": "https://github.com/atlas0mega/opencode-gpt-imagegen/issues"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": "^1.14.0"

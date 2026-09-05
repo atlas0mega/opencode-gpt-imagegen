@@ -1,9 +1,16 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import * as fs from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { buildSavedMessage, pickNonOverwritePath, saveGeneratedImage } from "../../src/output-image"
+import {
+  buildSavedMessage,
+  MAX_OUTPUT_BASE64_LENGTH,
+  pickNonOverwritePath,
+  resolveOutputPath,
+  saveGeneratedImage,
+} from "../../src/output-image"
 import { PNG_BASE64, PNG_BUFFER } from "./fixtures"
 
 let dir: string
@@ -74,6 +81,104 @@ describe("buildSavedMessage", () => {
 })
 
 describe("saveGeneratedImage", () => {
+  for (const versioned of [false, true]) {
+    test(`awaits approval before the ${versioned ? "versioned" : "original"} wx create and propagates denial`, async () => {
+      const out = path.join(dir, "image.png")
+      const denied = versioned ? path.join(dir, "image-v2.png") : out
+      if (versioned) await writeFile(out, "original")
+      const candidates: string[] = []
+      const openSpy = spyOn(fs, "open")
+      try {
+        await expect(
+          saveGeneratedImage(out, dir, PNG_BASE64, async (candidate) => {
+            await Promise.resolve()
+            expect(openSpy.mock.calls.some(([file]) => file === candidate)).toBe(false)
+            candidates.push(candidate)
+            // Even an EEXIST-shaped permission failure must not be treated as a collision.
+            if (candidate === denied) throw Object.assign(new Error("denied"), { code: "EEXIST" })
+          }),
+        ).rejects.toThrow("denied")
+        expect(candidates).toEqual(versioned ? [out, denied] : [out])
+        expect(openSpy.mock.calls.map(([file, flags]) => [file, flags])).toEqual(versioned ? [[out, "wx"]] : [])
+        expect(existsSync(denied)).toBe(false)
+        expect(existsSync(path.join(dir, "image-v3.png"))).toBe(false)
+        if (versioned) expect(await readFile(out, "utf8")).toBe("original")
+      } finally {
+        openSpy.mockRestore()
+      }
+    })
+  }
+
+  test("rechecks the parent after asynchronous write approval", async () => {
+    await mkdir(path.join(dir, "parent"))
+    await mkdir(path.join(dir, "other"))
+    await expect(
+      saveGeneratedImage("parent/image.png", dir, PNG_BASE64, async () => {
+        await rm(path.join(dir, "parent"), { recursive: true })
+        await symlink(path.join(dir, "other"), path.join(dir, "parent"))
+      }),
+    ).rejects.toThrow("not canonical")
+    expect(existsSync(path.join(dir, "other/image.png"))).toBe(false)
+  })
+
+  test("concurrent saves claim distinct files without overwriting", async () => {
+    const images = Array.from({ length: 12 }, (_, i) => Buffer.concat([PNG_BUFFER, Buffer.from(`${i}`)]))
+    const results = await Promise.all(
+      images.map((image) => saveGeneratedImage("image.png", dir, image.toString("base64"))),
+    )
+    expect(new Set(results.map((result) => result.savedPath)).size).toBe(images.length)
+    for (const [i, result] of results.entries()) {
+      expect(await readFile(result.savedPath)).toEqual(images[i])
+    }
+  })
+
+  test("does not follow or replace dangling symlink leaves, including versioned ones", async () => {
+    const target = path.join(dir, "missing.png")
+    const requested = path.join(dir, "image.png")
+    await symlink(target, requested)
+    await symlink(target, path.join(dir, "image-v2.png"))
+    expect(await pickNonOverwritePath(requested)).toBe(path.join(dir, "image-v3.png"))
+    const result = await saveGeneratedImage(requested, dir, PNG_BASE64)
+    expect(result.savedPath).toBe(path.join(dir, "image-v3.png"))
+    expect(await readlink(requested)).toBe(target)
+    expect((await lstat(requested)).isSymbolicLink()).toBe(true)
+    expect(existsSync(target)).toBe(false)
+  })
+
+  test("rejects invalid PNG and oversized output before creating directories", async () => {
+    await expect(saveGeneratedImage("new/image.png", dir, Buffer.from("not PNG").toString("base64"))).rejects.toThrow(
+      "invalid signature",
+    )
+    await expect(saveGeneratedImage("new/image.png", dir, "A".repeat(MAX_OUTPUT_BASE64_LENGTH + 1))).rejects.toThrow(
+      "50 MiB",
+    )
+    expect(existsSync(path.join(dir, "new"))).toBe(false)
+  })
+
+  test("canonicalizes existing ancestors without creating missing output parents", async () => {
+    await mkdir(path.join(dir, "real"))
+    await symlink(path.join(dir, "real"), path.join(dir, "alias"))
+    const out = await resolveOutputPath("alias/new/image.png", dir)
+    expect(out).toBe(path.join(dir, "real/new/image.png"))
+    expect(existsSync(path.dirname(out))).toBe(false)
+    expect((await saveGeneratedImage(out, dir, PNG_BASE64)).savedPath).toBe(out)
+  })
+
+  test("rejects a parent replaced by a symlink after approval", async () => {
+    await mkdir(path.join(dir, "parent"))
+    await mkdir(path.join(dir, "other"))
+    const out = await resolveOutputPath("parent/image.png", dir)
+    await rm(path.dirname(out), { recursive: true })
+    await symlink(path.join(dir, "other"), path.dirname(out))
+    await expect(saveGeneratedImage(out, dir, PNG_BASE64)).rejects.toThrow("not canonical")
+    expect(existsSync(path.join(dir, "other/image.png"))).toBe(false)
+  })
+
+  test("rejects dangling symlink output parents", async () => {
+    await symlink(path.join(dir, "missing"), path.join(dir, "parent"))
+    await expect(resolveOutputPath("parent/image.png", dir)).rejects.toThrow()
+  })
+
   test("writes the decoded image to the requested path", async () => {
     const out = "image.png"
     const result = await saveGeneratedImage(out, dir, PNG_BASE64)

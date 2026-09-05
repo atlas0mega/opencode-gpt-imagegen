@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, rm, symlink, truncate, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { readReferenceImages } from "../../src/input-image"
+import { MAX_INPUT_IMAGE_BYTES, readReferenceImages, resolveReferences } from "../../src/input-image"
 import { pngDataUrl as dataUrl, PNG_BUFFER as PNG } from "./fixtures"
 
 let dir: string
@@ -72,10 +72,73 @@ describe("readReferenceImages", () => {
     expect(readReferenceImages(["notes.txt"], dir)).rejects.toThrow(`unsupported image file type: ${abs}`)
   })
 
-  // Promise.all means one bad path fails the whole call — the opposite of auth.ts, which
-  // deliberately swallows read errors. Pin that contract so a future change can't silently drop a missing reference.
+  // A bad path must fail the whole call, not silently drop a reference.
   test("rejects the whole call when any path is missing", async () => {
     await writeFile(path.join(dir, "present.png"), PNG)
     expect(readReferenceImages(["present.png", "missing.png"], dir)).rejects.toThrow()
+  })
+
+  test("rejects more than eight images before resolving paths", async () => {
+    await expect(readReferenceImages(Array(9).fill("missing.png"), dir)).rejects.toThrow("at most 8")
+  })
+
+  test("rejects directories and oversized regular files", async () => {
+    await expect(readReferenceImages([dir], dir)).rejects.toThrow("regular file")
+    const file = path.join(dir, "large.png")
+    await writeFile(file, PNG)
+    await truncate(file, MAX_INPUT_IMAGE_BYTES + 1)
+    await expect(readReferenceImages([file], dir)).rejects.toThrow("20 MiB")
+    await expect(resolveReferences({ images: [file] }, dir)).rejects.toThrow("20 MiB")
+  })
+
+  test("caps total input bytes including repeated references", async () => {
+    const file = path.join(dir, "large.png")
+    await writeFile(file, PNG)
+    await truncate(file, MAX_INPUT_IMAGE_BYTES)
+    await expect(resolveReferences({ images: [file, file, file] }, dir)).rejects.toThrow("50 MiB total")
+    await expect(readReferenceImages([file, file, file], dir)).rejects.toThrow("50 MiB total")
+  })
+
+  test("rejects an aborted read", async () => {
+    await expect(readReferenceImages(["missing.png"], dir, AbortSignal.abort())).rejects.toThrow()
+  })
+})
+
+describe("resolveReferences", () => {
+  test("canonicalizes symlinks and preserves structured order and guidance", async () => {
+    await writeFile(path.join(dir, "first.png"), PNG)
+    await writeFile(path.join(dir, "second.png"), PNG)
+    await symlink(path.join(dir, "second.png"), path.join(dir, "alias.png"))
+    const references = [
+      { path: "alias.png", role: "style" as const, preserve: "palette" },
+      { path: "first.png", role: "edit-target" as const },
+    ]
+    expect(await resolveReferences({ references }, dir)).toEqual([
+      { path: path.join(dir, "second.png"), role: "style", preserve: "palette" },
+      { path: path.join(dir, "first.png"), role: "edit-target" },
+    ])
+  })
+
+  test("rejects mixing even when one argument is empty", async () => {
+    await expect(resolveReferences({ images: [], references: [] }, dir)).rejects.toThrow("mutually exclusive")
+    await expect(resolveReferences({ images: ["missing.png"], references: [] }, dir)).rejects.toThrow(
+      "mutually exclusive",
+    )
+  })
+
+  test("rejects a canonical reference replaced by a symlink after approval", async () => {
+    const approved = path.join(dir, "approved.png")
+    const other = path.join(dir, "other.png")
+    await writeFile(approved, PNG)
+    await writeFile(other, PNG)
+    const references = await resolveReferences({ images: [approved] }, dir)
+    await rm(approved)
+    await symlink(other, approved)
+    await expect(
+      readReferenceImages(
+        references.map((r) => r.path),
+        dir,
+      ),
+    ).rejects.toThrow("not canonical")
   })
 })

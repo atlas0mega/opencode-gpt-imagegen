@@ -1,5 +1,11 @@
-import { afterEach, describe, expect, mock, test } from "bun:test"
-import { callViaCodexResponses, parseImageGenerationResultFromSSE } from "../../src/codex"
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
+import {
+  buildGenerationPrompt,
+  callViaCodexResponses,
+  parseImageGenerationResultFromSSE,
+  REQUEST_TIMEOUT_MS,
+} from "../../src/codex"
+import { MAX_OUTPUT_BASE64_LENGTH } from "../../src/output-image"
 import type { GenerateArgs } from "../../src/types"
 
 // Build a ReadableStream that emits the given raw SSE text, as the fetch body would.
@@ -21,6 +27,27 @@ const imageDoneEvent = (result: string) =>
   dataEvent({ type: "response.output_item.done", item: { type: "image_generation_call", result } })
 
 describe("parseImageGenerationResultFromSSE", () => {
+  test("rejects oversized results rather than swallowing the limit error", async () => {
+    await expect(
+      parseImageGenerationResultFromSSE(sseStream(imageDoneEvent("A".repeat(MAX_OUTPUT_BASE64_LENGTH + 1)))),
+    ).rejects.toThrow("50 MiB")
+  })
+
+  test("bounds incomplete SSE events", async () => {
+    const chunk = new TextEncoder().encode("x".repeat(1024 * 1024))
+    let cancelled = false
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(chunk)
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+    await expect(parseImageGenerationResultFromSSE(stream)).rejects.toThrow("size limit")
+    expect(cancelled).toBe(true)
+  })
+
   test("returns the result of the image_generation_call done event", async () => {
     const stream = sseStream(imageDoneEvent("BASE64IMAGE"))
     expect(await parseImageGenerationResultFromSSE(stream)).toBe("BASE64IMAGE")
@@ -90,6 +117,8 @@ describe("callViaCodexResponses", () => {
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe("https://chatgpt.com/backend-api/codex/responses")
     expect(init.method).toBe("POST")
+    expect(init.redirect).toBe("error")
+    expect(init.signal).toBeInstanceOf(AbortSignal)
 
     const headers = init.headers as Record<string, string>
     expect(headers.Authorization).toBe("Bearer tok")
@@ -139,5 +168,86 @@ describe("callViaCodexResponses", () => {
     const auth = { type: "oauth", access: "tok" } as const
     const args: GenerateArgs = { prompt: "a cat", out: "cat.png", quality: "auto" }
     expect(callViaCodexResponses(auth, args, [])).rejects.toThrow("codex responses request failed: 500 upstream boom")
+  })
+
+  test("sends structured labels and attachments in the same order", async () => {
+    const fetchMock = mock(async (_url: string, _init: RequestInit) => new Response(imageDoneEvent("PARSED")))
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    const args: GenerateArgs = {
+      prompt: "rework the scene",
+      out: "scene.png",
+      quality: "auto",
+      references: [
+        { path: "target.png", role: "edit-target", preserve: "silhouette" },
+        { path: "style.png", role: "style", preserve: "palette" },
+        { path: "subject.png", role: "subject" },
+        { path: "material.png", role: "material" },
+        { path: "composition.png", role: "composition" },
+      ],
+    }
+    const urls = args.references?.map((reference) => `data:image/png;base64,${reference.path}`) ?? []
+    await callViaCodexResponses({ type: "oauth", access: "tok" }, args, urls)
+    const content = JSON.parse(fetchMock.mock.calls[0][1].body as string).input[0].content
+    expect(content[0].text).toBe(buildGenerationPrompt(args))
+    expect(content[0].text).toContain(
+      "Image 1: edit-target. Preserve: silhouette\nImage 2: style. Preserve: palette\nImage 3: subject.\nImage 4: material.\nImage 5: composition.",
+    )
+    expect(content.slice(1)).toEqual(urls.map((image_url) => ({ type: "input_image", image_url })))
+    expect(buildGenerationPrompt({ ...args, references: undefined, images: ["first.png", "second.png"] })).toContain(
+      "Image 1: reference image.\nImage 2: reference image.",
+    )
+  })
+
+  test("rejects mixing and pre-aborted requests before fetch", async () => {
+    const fetchMock = mock(async () => new Response(imageDoneEvent("PARSED")))
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    const args: GenerateArgs = { prompt: "cat", out: "cat.png", quality: "auto" }
+    const auth = { type: "oauth", access: "tok" } as const
+    await expect(callViaCodexResponses(auth, { ...args, images: [], references: [] }, [])).rejects.toThrow(
+      "mutually exclusive",
+    )
+    await expect(callViaCodexResponses(auth, args, [], AbortSignal.abort())).rejects.toThrow()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("propagates cancellation while consuming the response body", async () => {
+    const abort = new AbortController()
+    const fetchMock = mock(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start() {
+              queueMicrotask(() => abort.abort(new Error("cancelled")))
+            },
+          }),
+        ),
+    )
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    await expect(
+      callViaCodexResponses(
+        { type: "oauth", access: "tok" },
+        { prompt: "cat", out: "cat.png", quality: "auto" },
+        [],
+        abort.signal,
+      ),
+    ).rejects.toThrow("cancelled")
+  })
+
+  test("applies a five-minute timeout through response streaming", async () => {
+    const timeout = new AbortController()
+    const timeoutSpy = spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal)
+    try {
+      globalThis.fetch = mock(async () => {
+        queueMicrotask(() => timeout.abort(new DOMException("timed out", "TimeoutError")))
+        return new Response(new ReadableStream())
+      }) as unknown as typeof fetch
+      await expect(
+        callViaCodexResponses({ type: "oauth", access: "tok" }, { prompt: "cat", out: "cat.png", quality: "auto" }, []),
+      ).rejects.toThrow("timed out")
+      expect(timeoutSpy).toHaveBeenCalledWith(300000)
+      expect(REQUEST_TIMEOUT_MS).toBe(300000)
+    } finally {
+      timeoutSpy.mockRestore()
+    }
   })
 })

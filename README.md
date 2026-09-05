@@ -1,5 +1,44 @@
 # opencode-gpt-imagegen
 
+## Local Fork: References, Materials, and Optional Blender
+
+This fork adds ordered role-based image references, upload/read/write permissions,
+bounded requests, and non-overwriting output. It includes the
+[image/material development skill](skills/image-material-development/SKILL.md)
+and the optional `gpt_blender` tool. See [security boundaries](SECURITY-REVIEW.md).
+
+`gpt_blender` uses local Blender, not a Blender MCP or paid mesh service. It requests
+human approval via `blender_execute` before running. Blender must already be on
+PATH; nothing installs it automatically. It produces UV starter primitives
+(plane/cube/sphere), assigns optional albedo/roughness/metallic/OpenGL normal maps,
+and saves .blend, .glb, preview PNG, and a manifest in a unique output subdirectory.
+It is not image-to-mesh reconstruction, general modeling, or PBR-map generation.
+
+Build this fork with `bun install --frozen-lockfile --ignore-scripts` and
+`bun run build`, then register the absolute path to its `dist/index.js`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["file:///absolute/path/to/opencode-gpt-imagegen/dist/index.js"],
+  "skills": {"paths": ["/absolute/path/to/opencode-gpt-imagegen/skills"]},
+  "permission": {
+    "*blender*": "ask",
+    "gpt_imagegen": "ask",
+    "gpt_blender": "ask",
+    "blender_execute": "ask"
+  }
+}
+```
+
+Merge these entries with existing config; do not replace your provider settings.
+Restart OpenCode. Do not use auto-approval modes or override these permissions if
+human approval is required. MCP/provider setup and paid jobs require separate
+approval. The package is private to prevent accidental upstream npm publication.
+
+The upstream documentation below describes the original package. Its npm install
+snippet installs upstream, not this fork.
+
 <p align="center"><img src="./ogp.png" alt="opencode-gpt-imagegen × gpt-image-2" /></p>
 
 > Bring [**ChatGPT Images 2.0**](https://openai.com/index/introducing-chatgpt-images-2-0/) (`gpt-image-2`) to [OpenCode](https://opencode.ai). Use it through your **ChatGPT subscription** (no API costs!) or through the **OpenAI API** — your call.
