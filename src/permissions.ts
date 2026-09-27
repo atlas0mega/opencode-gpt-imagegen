@@ -1,20 +1,21 @@
 import { realpath } from "node:fs/promises"
 import * as path from "node:path"
-import type { ToolContext } from "@opencode-ai/plugin"
 
-// Callers resolve paths without reading contents or creating outputs first.
-export async function askExternalDirectory(ctx: ToolContext, paths: string[]): Promise<void> {
-  const roots = await Promise.all([ctx.directory, ctx.worktree].map((root) => realpath(root)))
-  const external = [...new Set(paths)].filter(
-    (candidate) =>
-      !roots.some((root) => {
-        const relative = path.relative(root, candidate)
-        return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
-      }),
-  )
-  ctx.abort.throwIfAborted()
-  if (external.length) {
-    await ctx.ask({ permission: "external_directory", patterns: external, always: [], metadata: { paths: external } })
-    ctx.abort.throwIfAborted()
+// V2 custom tools use one permission action for the invocation, which a human
+// may save with "Allow always". They cannot create extra per-path permission
+// prompts in the plugin context. Fail closed on paths outside this Location
+// unless the owner explicitly enables them in plugin options.
+export async function requireLocalPaths(
+  location: string,
+  candidates: readonly string[],
+  allowExternalPaths = false,
+): Promise<void> {
+  if (allowExternalPaths) return
+  const root = await realpath(location)
+  for (const candidate of candidates) {
+    const relative = path.relative(root, candidate)
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error(`Path is outside the OpenCode location: ${candidate}. Use a path within ${root}.`)
+    }
   }
 }

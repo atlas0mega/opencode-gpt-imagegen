@@ -1,135 +1,134 @@
-import * as path from "node:path"
-import type { Hooks, Plugin, PluginInput, PluginModule } from "@opencode-ai/plugin"
-import { tool } from "@opencode-ai/plugin"
+import { Plugin } from "@opencode/plugin"
+import type { ToolContext } from "@opencode/plugin/promise/tool"
+import { z } from "zod"
 import { loadOpenAIAuth } from "./auth"
 import { blenderTool } from "./blender"
-import { buildGenerationPrompt, callViaCodexResponses } from "./codex"
+import { callViaCodexResponses } from "./codex"
 import { readReferenceImages, resolveReferences } from "./input-image"
 import { resolveOutputPath, saveGeneratedImage } from "./output-image"
-import { askExternalDirectory } from "./permissions"
+import { requireLocalPaths } from "./permissions"
 
-const GptImagePlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => {
-  return {
-    tool: {
-      gpt_blender: blenderTool,
-      gpt_imagegen: tool({
+const argsSchema = z
+  .object({
+    prompt: z.string().min(1),
+    out: z.string().min(1),
+    quality: z.enum(["low", "medium", "high", "auto"]),
+    size: z.string().optional(),
+    images: z.array(z.string()).max(8).optional(),
+    references: z
+      .array(
+        z
+          .object({
+            path: z.string(),
+            role: z.enum(["edit-target", "style", "subject", "material", "composition"]),
+            preserve: z.string().optional(),
+          })
+          .strict(),
+      )
+      .max(8)
+      .optional(),
+  })
+  .strict()
+
+// The published package targets a V2 host with cancellable Promise tool
+// executors. @opencode/plugin 2.0.10 is pinned for Bun's two-day release-age
+// policy; its ToolContext type predates the 2.0.18 signal field.
+export function toolSignal(context: ToolContext): AbortSignal {
+  const signal = (context as ToolContext & { signal?: AbortSignal }).signal
+  if (!signal) throw new Error("OpenCode V2.0.18 or newer is required for cancellable image tools.")
+  return signal
+}
+
+export default Plugin.define({
+  id: "opencode-gpt-imagegen",
+  async setup(ctx) {
+    const allowExternalPaths = ctx.options.allow_external_paths === true
+    const sessionDirectory = async (sessionID: string) => (await ctx.session.get({ sessionID })).location.directory
+
+    await ctx.tool.transform((editor) => {
+      editor.add({
+        name: "gpt_imagegen",
         description: [
           "Generate raster images using OpenAI's hosted image_generation tool.",
           "Use for AI-created bitmap visuals such as photos, illustrations, textures, sprites, and mockups.",
-          "Do not use when the task is better handled by editing existing SVG/vector/code-native assets, extending an established icon or logo system, or building the visual directly in HTML/CSS/canvas.",
-          "Attach up to 8 reference images using `references` with ordered roles and optional preservation guidance, or the legacy `images` paths, never both. Limit: 20 MiB each and 50 MiB total.",
-          "Reference roles guide generation; this is not a native exact-edit or mask interface and does not guarantee unchanged pixels.",
-          "For many distinct assets, invoke gpt_imagegen once per requested asset rather than relying on multi-image output; gpt_imagegen returns one image per call.",
-          "Requires OpenCode to be authenticated with ChatGPT OAuth. Returns the absolute path of the saved PNG.",
+          "Do not use for SVG/vector/code-native graphics or when the image-material-development skill is not applicable.",
+          "Attach up to 8 reference images using ordered references with roles or legacy images paths, never both.",
+          "One V2 tool-level permission can be approved once or saved with Allow always; paths must stay inside this OpenCode location unless the owner enables allow_external_paths.",
+          "Requires an active OpenAI ChatGPT OAuth connection. Returns the saved PNG path; never overwrites an existing file.",
         ].join(" "),
-        // https://developers.openai.com/api/docs/guides/image-generation
-        args: {
-          prompt: tool.schema.string().describe("Description of the image to generate."),
-          out: tool.schema
-            .string()
-            .describe("Output file path, relative to the project directory unless absolute. The plugin writes a PNG."),
-          quality: tool.schema
-            .enum(["low", "medium", "high", "auto"])
-            .describe("Generation quality passed to the hosted image_generation tool."),
-          size: tool.schema
-            .string()
-            .optional()
-            .describe(
-              "Optional image size passed to the hosted image_generation tool. Use `auto` or `WIDTHxHEIGHT`; width and height must be multiples of 16px, max edge <= 3840px, long-to-short ratio <= 3:1, and total pixels between 655,360 and 8,294,400.",
-            ),
-          images: tool.schema
-            .array(tool.schema.string())
-            .max(8)
-            .optional()
-            .describe(
-              "Legacy reference image paths, relative to the project directory unless absolute. Cannot mix with references.",
-            ),
-          references: tool.schema
-            .array(
-              tool.schema.object({
-                path: tool.schema
-                  .string()
-                  .describe("Reference image path, relative to the project directory unless absolute."),
-                role: tool.schema.enum(["edit-target", "style", "subject", "material", "composition"]),
-                preserve: tool.schema
-                  .string()
-                  .optional()
-                  .describe("Optional preservation guidance, not an exact-edit guarantee."),
-              }),
-            )
-            .max(8)
-            .optional()
-            .describe("Ordered reference images with roles. Cannot mix with images."),
+        input: {
+          type: "object",
+          properties: {
+            prompt: { type: "string", minLength: 1, description: "Description of the image to generate." },
+            out: {
+              type: "string",
+              minLength: 1,
+              description: "PNG output path, relative to this location unless absolute.",
+            },
+            quality: { type: "string", enum: ["low", "medium", "high", "auto"] },
+            size: { type: "string", description: "Optional auto or WIDTHxHEIGHT image size." },
+            images: {
+              type: "array",
+              maxItems: 8,
+              items: { type: "string" },
+              description: "Legacy ordered image paths; cannot mix with references.",
+            },
+            references: {
+              type: "array",
+              maxItems: 8,
+              items: {
+                type: "object",
+                properties: {
+                  path: { type: "string" },
+                  role: { type: "string", enum: ["edit-target", "style", "subject", "material", "composition"] },
+                  preserve: { type: "string" },
+                },
+                required: ["path", "role"],
+                additionalProperties: false,
+              },
+              description: "Ordered reference paths with roles and optional preservation guidance.",
+            },
+          },
+          required: ["prompt", "out", "quality"],
+          additionalProperties: false,
         },
-        async execute(args, ctx) {
-          ctx.abort.throwIfAborted()
-          const references = await resolveReferences(args, ctx.directory)
-          const out = await resolveOutputPath(args.out, ctx.directory)
-          const prompt = buildGenerationPrompt(args)
-          await askExternalDirectory(ctx, [...references.map((reference) => reference.path), out])
-          if (references.length) {
-            await ctx.ask({
-              permission: "read",
-              patterns: references.map((reference) => reference.path),
-              always: references.map((reference) => reference.path),
-              metadata: { references },
-            })
-          }
-          ctx.abort.throwIfAborted()
-          await ctx.ask({
-            permission: "edit",
-            patterns: [out, path.dirname(out)],
-            always: [],
-            metadata: { output: out },
-          })
-          ctx.abort.throwIfAborted()
-          await ctx.ask({
-            permission: "gpt_imagegen",
-            patterns: [out],
-            always: [],
-            metadata: { prompt, references, output: out, billing: "subscription" },
-          })
-          ctx.abort.throwIfAborted()
-          const auth = await loadOpenAIAuth()
-          if (!auth) {
-            throw new Error("OpenAI ChatGPT OAuth credentials not configured.")
-          }
-
-          const inputImageDataUrls = await readReferenceImages(
-            references.map((reference) => reference.path),
-            ctx.directory,
-            ctx.abort,
+        options: { permission: "gpt_imagegen" },
+        async execute(input, context) {
+          const args = argsSchema.parse(input)
+          const signal = toolSignal(context)
+          signal.throwIfAborted()
+          const directory = await sessionDirectory(context.sessionID)
+          const references = await resolveReferences(args, directory)
+          const out = await resolveOutputPath(args.out, directory)
+          await requireLocalPaths(
+            directory,
+            [...references.map((reference) => reference.path), out],
+            allowExternalPaths,
           )
-          const base64 = await callViaCodexResponses(auth, args, inputImageDataUrls, ctx.abort)
+          signal.throwIfAborted()
+          const auth = await loadOpenAIAuth(ctx)
+          if (!auth) throw new Error("An active OpenAI ChatGPT OAuth connection is required.")
 
-          ctx.abort.throwIfAborted()
+          const images = await readReferenceImages(
+            references.map((reference) => reference.path),
+            directory,
+            signal,
+          )
+          const base64 = await callViaCodexResponses(auth, args, images, signal)
+          signal.throwIfAborted()
           const { savedPath, versioned, message } = await saveGeneratedImage(
             out,
-            ctx.directory,
+            directory,
             base64,
             async (candidate) => {
-              ctx.abort.throwIfAborted()
-              await askExternalDirectory(ctx, [candidate])
-              await ctx.ask({ permission: "edit", patterns: [candidate], always: [], metadata: { output: candidate } })
-              ctx.abort.throwIfAborted()
+              signal.throwIfAborted()
+              await requireLocalPaths(directory, [candidate], allowExternalPaths)
             },
           )
-
-          return {
-            output: message,
-            metadata: {
-              out: savedPath,
-              versioned,
-              billing: "subscription",
-            },
-          }
+          return { content: message, metadata: { out: savedPath, versioned, billing: "subscription" } }
         },
-      }),
-    },
-  }
-}
-
-export default {
-  id: "opencode-gpt-imagegen",
-  server: GptImagePlugin,
-} satisfies PluginModule
+      })
+      editor.add(blenderTool(sessionDirectory, allowExternalPaths, toolSignal))
+    })
+  },
+})
