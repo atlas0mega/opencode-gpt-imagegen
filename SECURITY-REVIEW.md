@@ -1,6 +1,6 @@
 # Security Review and Local Deployment
 
-Historical upstream review: 2026-09-05, commit `6d87754110bcc810abda418d38e30ebed10eedd6`, published version 0.1.12 (`ab5d219d5088f18c5326e32fe5774648ddb0f04b`). The V2-only fork migration is a **new, unmerged review in progress**, not covered by that upstream signature or byte match.
+Historical upstream review: 2026-09-05, commit `6d87754110bcc810abda418d38e30ebed10eedd6`, published version 0.1.12 (`ab5d219d5088f18c5326e32fe5774648ddb0f04b`). The V2-only fork migration was merged to this fork's `main`; it is **not covered** by that upstream signature or byte match. Further changes on `OPENCODE` still require review before a new release.
 
 No obvious malicious behavior was found in the reviewed source, scripts, or published plugin bundle. This is a point-in-time review, not a guarantee of safety, a full transitive dependency audit, or approval of future versions.
 
@@ -29,3 +29,9 @@ Use a local build of this fork, not the upstream npm package or a moving remote 
 Keep `gpt_imagegen` and `gpt_blender` set to `ask` unless the owner elects V2's saved **Allow always** for a trusted workflow. Recheck effective project/agent policy before use. Denying a request is final; do not route around it with another tool.
 
 The package is private to prevent accidental publication under the upstream npm name. GitHub fork creation does not publish local modifications. Review changes and explicitly commit/push if remote publication is desired. Re-audit before updating dependencies or upstream code. Restart OpenCode after configuration changes.
+
+## V2 Dogfood (2026-09-27)
+
+The V2-only package passed 79 unit tests, typecheck, Biome CI, build, and a packed-install smoke on the private `v2.0.18-atlas.afb4eb71` host. One human-approved no-reference ChatGPT OAuth call saved a 600-permission PNG at `/tmp/opencode/image-v2-dogfood-20260927/image-v2-verify.png`; its inspected content matched the test prompt. The provider returned 1254×1254 despite a 1024×1024 request. The tool now reports actual dimensions and warns on a mismatch; no local resizing or second paid generation was performed.
+
+One separately human-approved, texture-free local Blender 5.2.1 UV-cube operation wrote a `.blend`, `.glb`, preview PNG, and manifest under `/tmp/opencode/image-v2-dogfood-20260927/v2_smoke_cube-seYmWI/`. The GLB header, PNG signature, compressed Blender project, manifest, and visual preview were checked. No Blender MCP or paid mesh service was enabled. Global V2 tool permissions remain `ask`, external paths are rejected by default, and the standalone Blender MCP remains disabled. Reference-guided OAuth generation and a real permission-denial round-trip remain untested live; mocks cover their corresponding inputs and paths.

@@ -193,19 +193,13 @@ describe("callViaCodexResponses", () => {
       "Image 1: edit-target. Preserve: silhouette\nImage 2: style. Preserve: palette\nImage 3: subject.\nImage 4: material.\nImage 5: composition.",
     )
     expect(content.slice(1)).toEqual(urls.map((image_url) => ({ type: "input_image", image_url })))
-    expect(buildGenerationPrompt({ ...args, references: undefined, images: ["first.png", "second.png"] })).toContain(
-      "Image 1: reference image.\nImage 2: reference image.",
-    )
   })
 
-  test("rejects mixing and pre-aborted requests before fetch", async () => {
+  test("rejects pre-aborted requests before fetch", async () => {
     const fetchMock = mock(async () => new Response(imageDoneEvent("PARSED")))
     globalThis.fetch = fetchMock as unknown as typeof fetch
     const args: GenerateArgs = { prompt: "cat", out: "cat.png", quality: "auto" }
     const auth = { type: "oauth", access: "tok" } as const
-    await expect(callViaCodexResponses(auth, { ...args, images: [], references: [] }, [])).rejects.toThrow(
-      "mutually exclusive",
-    )
     await expect(callViaCodexResponses(auth, args, [], AbortSignal.abort())).rejects.toThrow()
     expect(fetchMock).not.toHaveBeenCalled()
   })

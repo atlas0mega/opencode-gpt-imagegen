@@ -7,13 +7,12 @@ export type ImageReference = {
   preserve?: string
 }
 
-export type ResolvedReference = { path: string; role?: ImageReference["role"]; preserve?: string }
+export type ResolvedReference = ImageReference
 
 export type GenerateArgs = {
   prompt: string
   out: string
   quality: "low" | "medium" | "high" | "auto"
   size?: string
-  images?: string[]
   references?: ImageReference[]
 }

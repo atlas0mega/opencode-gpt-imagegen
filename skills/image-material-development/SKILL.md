@@ -17,7 +17,7 @@ This workflow uses the fork's `gpt_imagegen` tool, not OpenAI's native `image_ge
 
 ## References and Iteration
 
-Prefer `references`, an ordered array of `{path, role, preserve?}`. Roles are `edit-target`, `style`, `subject`, `material`, and `composition`. Do not also provide the legacy `images` argument. Maximum 8 images, 20 MiB per image, 50 MiB total.
+Use `references`, an ordered array of `{path, role, preserve?}`. Roles are `edit-target`, `style`, `subject`, `material`, and `composition`. There is no legacy `images` argument. Maximum 8 images, 20 MiB per image, 50 MiB total.
 
 ```json
 {
@@ -82,7 +82,7 @@ Explain the proposed geometry, texture inputs, output location, expected files, 
 }
 ```
 
-`output_dir` must already exist. The tool requests `blender_execute`, texture `read`, and output `edit` permission before writing or spawning. Keep `blender_execute` set to `ask` and approve only the current operation, not all future operations. It creates a unique subdirectory containing a .blend scene, a selected-mesh .glb, preview.png, and manifest.json. Timeout is 120 seconds; partial files may remain after failure. Inspect results before claiming successful rendering or mesh usability.
+`output_dir` must already exist. The V2 tool requests one `gpt_blender` invocation permission; it cannot request separate texture `read` or output `edit` permissions. Approving the tool also consents to reading its listed local textures and writing its output. Keep `gpt_blender` at `ask`; choose Allow once for an individual operation, or Allow always only after explicit human approval of a trusted ongoing workflow. Canonical path checks still apply. It creates a unique subdirectory containing a .blend scene, a selected-mesh .glb, preview.png, and manifest.json. Timeout is 120 seconds; partial files may remain after failure. Inspect results before claiming successful rendering or mesh usability.
 
 For advanced geometry, UV editing, baking, or an external Blender MCP:
 

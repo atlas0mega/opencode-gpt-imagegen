@@ -14,6 +14,17 @@ function context(connection: unknown, credential: unknown) {
 }
 
 describe("V2 active OpenAI connection", () => {
+  test("uses the host's canonical accountID metadata for the Codex account header", async () => {
+    expect(
+      await loadOpenAIAuth(
+        context(
+          { id: "active" },
+          { type: "oauth", methodID: "chatgpt-browser", access: "test-token", metadata: { accountID: "acct-v2" } },
+        ),
+      ),
+    ).toEqual({ type: "oauth", access: "test-token", accountId: "acct-v2" })
+  })
+
   test("resolves an active browser OAuth token and account ID without reading credential files", async () => {
     expect(
       await loadOpenAIAuth(

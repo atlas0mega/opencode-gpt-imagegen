@@ -88,14 +88,18 @@ describe("readReferenceImages", () => {
     await writeFile(file, PNG)
     await truncate(file, MAX_INPUT_IMAGE_BYTES + 1)
     await expect(readReferenceImages([file], dir)).rejects.toThrow("20 MiB")
-    await expect(resolveReferences({ images: [file] }, dir)).rejects.toThrow("20 MiB")
+    await expect(resolveReferences({ references: [{ path: file, role: "edit-target" }] }, dir)).rejects.toThrow(
+      "20 MiB",
+    )
   })
 
   test("caps total input bytes including repeated references", async () => {
     const file = path.join(dir, "large.png")
     await writeFile(file, PNG)
     await truncate(file, MAX_INPUT_IMAGE_BYTES)
-    await expect(resolveReferences({ images: [file, file, file] }, dir)).rejects.toThrow("50 MiB total")
+    await expect(
+      resolveReferences({ references: Array(3).fill({ path: file, role: "edit-target" }) }, dir),
+    ).rejects.toThrow("50 MiB total")
     await expect(readReferenceImages([file, file, file], dir)).rejects.toThrow("50 MiB total")
   })
 
@@ -119,11 +123,10 @@ describe("resolveReferences", () => {
     ])
   })
 
-  test("rejects mixing even when one argument is empty", async () => {
-    await expect(resolveReferences({ images: [], references: [] }, dir)).rejects.toThrow("mutually exclusive")
-    await expect(resolveReferences({ images: ["missing.png"], references: [] }, dir)).rejects.toThrow(
-      "mutually exclusive",
-    )
+  test("rejects more than eight structured references", async () => {
+    await expect(
+      resolveReferences({ references: Array(9).fill({ path: "missing.png", role: "style" }) }, dir),
+    ).rejects.toThrow("at most 8")
   })
 
   test("rejects a canonical reference replaced by a symlink after approval", async () => {
@@ -131,7 +134,7 @@ describe("resolveReferences", () => {
     const other = path.join(dir, "other.png")
     await writeFile(approved, PNG)
     await writeFile(other, PNG)
-    const references = await resolveReferences({ images: [approved] }, dir)
+    const references = await resolveReferences({ references: [{ path: approved, role: "edit-target" }] }, dir)
     await rm(approved)
     await symlink(other, approved)
     await expect(

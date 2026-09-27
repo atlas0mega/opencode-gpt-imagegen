@@ -63,14 +63,15 @@ human authorization is required.
 ## `gpt_imagegen`
 
 The tool takes `prompt`, `out`, `quality` (`low`, `medium`, `high`, or `auto`),
-optional `size`, and up to eight ordered references. Use `images` for simple
-legacy path lists **or** `references` with a `path`, a role (`edit-target`,
-`style`, `subject`, `material`, or `composition`), and optional `preserve`
-guidance; never both. References are uploaded to OpenAI's hosted Codex image
+optional `size`, and up to eight ordered `references`, each with a `path`, a role
+(`edit-target`, `style`, `subject`, `material`, or `composition`), and optional
+`preserve` guidance. References are uploaded to OpenAI's hosted Codex image
 generation endpoint. The tool writes one PNG per call using exclusive
 creation and versions existing names (`-v2` through `-v999`) rather than
 overwriting. Requests are cancellable and bounded; subscription usage and
-provider behavior depend on your account and OpenAI policy.
+provider behavior depend on your account and OpenAI policy. `size` is sent to
+the provider, but the resulting dimensions may differ; the tool reports the
+actual PNG dimensions and warns on a mismatch rather than silently resizing.
 
 ## `gpt_blender`
 
