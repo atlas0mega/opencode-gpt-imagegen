@@ -33,7 +33,10 @@ with any existing plugins and settings:
 
 Use the V2 permission prompt's **Allow once** or **Allow always** choice for
 each tool. The latter avoids repeated prompts; it does not disable this
-plugin's canonical path checks. This repo is private to prevent accidental
+plugin's canonical path checks. Tool registration only filters catalog visibility;
+this plugin also requires the host's `ctx.permission.assert` leaf API before OAuth
+or Blender execution. Hosts without it fail closed rather than bypassing `ask`.
+This repo is private to prevent accidental
 publication under the upstream npm name. Do not enable the package globally
 until you have verified V2 OAuth, tool permission, cancellation and the
 installed artifact in your environment.
@@ -63,14 +66,15 @@ human authorization is required.
 ## `gpt_imagegen`
 
 The tool takes `prompt`, `out`, `quality` (`low`, `medium`, `high`, or `auto`),
-optional `size`, and up to eight ordered references. Use `images` for simple
-legacy path lists **or** `references` with a `path`, a role (`edit-target`,
-`style`, `subject`, `material`, or `composition`), and optional `preserve`
-guidance; never both. References are uploaded to OpenAI's hosted Codex image
+optional `size`, and up to eight ordered `references`, each with a `path`, a role
+(`edit-target`, `style`, `subject`, `material`, or `composition`), and optional
+`preserve` guidance. References are uploaded to OpenAI's hosted Codex image
 generation endpoint. The tool writes one PNG per call using exclusive
 creation and versions existing names (`-v2` through `-v999`) rather than
 overwriting. Requests are cancellable and bounded; subscription usage and
-provider behavior depend on your account and OpenAI policy.
+provider behavior depend on your account and OpenAI policy. `size` is sent to
+the provider, but the resulting dimensions may differ; the tool reports the
+actual PNG dimensions and warns on a mismatch rather than silently resizing.
 
 ## `gpt_blender`
 

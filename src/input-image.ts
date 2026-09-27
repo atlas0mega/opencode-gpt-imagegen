@@ -8,18 +8,15 @@ export const MAX_REFERENCE_IMAGES = 8
 export const MAX_INPUT_IMAGE_BYTES = 20 * 1024 * 1024
 export const MAX_INPUT_TOTAL_BYTES = 50 * 1024 * 1024
 
-export function getReferences(args: Pick<GenerateArgs, "images" | "references">): ResolvedReference[] {
-  if (args.images !== undefined && args.references !== undefined) {
-    throw new Error("images and references are mutually exclusive")
-  }
-  const references = args.references ?? (args.images ?? []).map((p) => ({ path: p }))
+export function getReferences(args: Pick<GenerateArgs, "references">): ResolvedReference[] {
+  const references = args.references ?? []
   if (references.length > MAX_REFERENCE_IMAGES) throw new Error("at most 8 reference images are allowed")
   return references
 }
 
 // Resolve and inspect metadata only; the caller must approve these paths before reading bytes.
 export async function resolveReferences(
-  args: Pick<GenerateArgs, "images" | "references">,
+  args: Pick<GenerateArgs, "references">,
   ctxDir: string,
 ): Promise<ResolvedReference[]> {
   const resolved: ResolvedReference[] = []
@@ -41,7 +38,7 @@ export async function readReferenceImages(
   ctxDir: string,
   signal?: AbortSignal,
 ): Promise<string[]> {
-  getReferences({ images: paths })
+  if ((paths?.length ?? 0) > MAX_REFERENCE_IMAGES) throw new Error("at most 8 reference images are allowed")
   const urls: string[] = []
   let total = 0
   for (const p of paths ?? []) {

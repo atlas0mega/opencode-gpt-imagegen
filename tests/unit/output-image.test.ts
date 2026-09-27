@@ -139,6 +139,7 @@ describe("saveGeneratedImage", () => {
     await symlink(target, path.join(dir, "image-v2.png"))
     expect(await pickNonOverwritePath(requested)).toBe(path.join(dir, "image-v3.png"))
     const result = await saveGeneratedImage(requested, dir, PNG_BASE64)
+    expect([result.width, result.height]).toEqual([1, 1])
     expect(result.savedPath).toBe(path.join(dir, "image-v3.png"))
     expect(await readlink(requested)).toBe(target)
     expect((await lstat(requested)).isSymbolicLink()).toBe(true)

@@ -15,7 +15,7 @@ export async function loadOpenAIAuth(context: Pick<Plugin.Context, "integration"
       return undefined
     }
     const metadata = credential.metadata ?? {}
-    const accountId = metadata.accountId ?? metadata.account_id
+    const accountId = metadata.accountID ?? metadata.accountId ?? metadata.account_id
     return {
       type: "oauth",
       access: credential.access,

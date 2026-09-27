@@ -53,7 +53,7 @@ export function buildSavedMessage(savedPath: string, requestedPath: string): str
   return `Generated image saved to ${savedPath}${versionNote}.`
 }
 
-type SaveResult = { savedPath: string; versioned: boolean; message: string }
+type SaveResult = { savedPath: string; versioned: boolean; message: string; width: number; height: number }
 
 // The tool passes an approved canonical path. Exclusive creation also treats dangling
 // symlinks as occupied, so neither concurrent saves nor symlink leaves are overwritten.
@@ -69,6 +69,12 @@ export async function saveGeneratedImage(
   if (!png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
     throw new Error("generated image is not a PNG (invalid signature)")
   }
+  if (png.length < 24 || png.toString("ascii", 12, 16) !== "IHDR") {
+    throw new Error("generated image has no PNG dimensions")
+  }
+  const width = png.readUInt32BE(16)
+  const height = png.readUInt32BE(20)
+  if (!width || !height) throw new Error("generated image has invalid PNG dimensions")
   const requestedPath = path.resolve(ctxDir, out)
   const dir = path.dirname(requestedPath)
   if ((await resolveOutputPath(requestedPath, ctxDir)) !== requestedPath) {
@@ -101,6 +107,8 @@ export async function saveGeneratedImage(
       savedPath,
       versioned: savedPath !== requestedPath,
       message: buildSavedMessage(savedPath, requestedPath),
+      width,
+      height,
     }
   }
   throw new Error(`could not find a non-conflicting filename (tried up to v${MAX_OUTPUT_VERSION_SUFFIX})`)

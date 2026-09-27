@@ -32,13 +32,19 @@ async function writeOpencodeConfig(): Promise<void> {
   const config = {
     $schema: "https://opencode.ai/config.json",
     plugins: [REPO_DIR],
+    // This disposable fixture authorizes only its image calls, never Blender
+    // or unrelated tools. Do not use the CLI's blanket --auto permission.
+    permissions: [
+      { action: "gpt_imagegen", resource: "*", effect: "allow" },
+      { action: "gpt_blender", resource: "*", effect: "deny" },
+    ],
   }
   await writeFile(path.join(cfgDir, "opencode.jsonc"), JSON.stringify(config, null, 2))
 }
 
 async function runOpencode(prompt: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const args = ["run", "--standalone", "--auto", prompt]
+    const args = ["run", "--standalone", prompt]
     if (process.env.OPENCODE_MODEL) args.push("--model", process.env.OPENCODE_MODEL)
     const proc = spawn("opencode", args, {
       cwd: WORKDIR,
@@ -127,7 +133,8 @@ describe("gpt_imagegen e2e (subscription)", () => {
     async () => {
       await runOpencode(
         `Use the gpt_imagegen tool to generate an image at together.png. ` +
-          `Pass ./character.png and ./character-v2.png in the images argument. ` +
+          `Pass ordered references: {path: "./character.png", role: "subject", preserve: "his outfit and hairstyle"} ` +
+          `and {path: "./character-v2.png", role: "subject", preserve: "her outfit and hairstyle"}. ` +
           `Content: the man from Image 1 (navy samue + red hachimaki) and the woman from Image 2 (yellow yukata + red wagasa) standing side by side ` +
           `on the engawa veranda of an old Japanese house, smiling at the viewer. ` +
           `Preserve each character's outfit, hairstyle, and props exactly. ` +

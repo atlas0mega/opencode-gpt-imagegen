@@ -5,6 +5,8 @@ import { mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from "node:
 import os from "node:os"
 import path from "node:path"
 import { PassThrough } from "node:stream"
+import type { Context } from "@opencode/plugin/promise/plugin"
+import type { ToolContext } from "@opencode/plugin/promise/tool"
 import { blenderTool, executeBlender } from "../../src/blender"
 
 let dir: string
@@ -46,6 +48,7 @@ describe("V2 Blender tool", () => {
       async () => dir,
       false,
       (context) => (context as unknown as { signal: AbortSignal }).signal,
+      { assert: async () => {} } as unknown as Context["permission"],
     )
     expect(tool.name).toBe("gpt_blender")
     expect(tool.options?.permission).toBe("gpt_blender")
@@ -59,6 +62,35 @@ describe("V2 Blender tool", () => {
       "normal",
     ])
     expect(JSON.stringify(tool.input)).not.toContain("python")
+  })
+
+  test("a denied tool permission prevents path inspection, output creation and Blender execution", async () => {
+    let lookedUpSession = false
+    const tool = blenderTool(
+      async () => {
+        lookedUpSession = true
+        return dir
+      },
+      false,
+      (context) => (context as unknown as { signal: AbortSignal }).signal,
+      {
+        assert: async () => {
+          throw new Error("fixture permission denied")
+        },
+      } as unknown as Context["permission"],
+    )
+    await expect(
+      tool.execute(args, {
+        sessionID: "ses_denied",
+        agent: "build",
+        messageID: "msg_denied",
+        id: "call_denied",
+        signal: controller.signal,
+        progress: async () => {},
+      } as unknown as ToolContext),
+    ).rejects.toThrow("fixture permission denied")
+    expect(lookedUpSession).toBe(false)
+    expect(await readdir(dir)).toEqual([])
   })
 
   test("rejects unsafe names, URLs, arbitrary code, and output controls before spawning", async () => {
