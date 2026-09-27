@@ -1,30 +1,28 @@
-import * as fs from "node:fs/promises"
-import * as path from "node:path"
-import { xdgData } from "xdg-basedir"
+import type { Plugin } from "@opencode/plugin"
 import type { OpenAIAuth } from "./types"
 
-// Mirrors OpenCode's auth resolution: OPENCODE_AUTH_CONTENT overrides $XDG_DATA_HOME/opencode/auth.json.
-// The Auth service is not exposed to external plugins, so this reproduces the rules directly.
-async function loadAuthData(): Promise<Record<string, unknown>> {
-  if (process.env.OPENCODE_AUTH_CONTENT) {
-    return JSON.parse(process.env.OPENCODE_AUTH_CONTENT) as Record<string, unknown>
-  }
-  if (!xdgData) {
-    throw new Error("could not determine XDG data directory")
-  }
-  const raw = await fs.readFile(path.join(xdgData, "opencode", "auth.json"), "utf-8")
-  return JSON.parse(raw) as Record<string, unknown>
-}
-
-export async function loadOpenAIAuth(): Promise<OpenAIAuth | undefined> {
+// Resolve the active V2 OpenAI integration for each call; never copy credentials to project files.
+export async function loadOpenAIAuth(context: Pick<Plugin.Context, "integration">): Promise<OpenAIAuth | undefined> {
   try {
-    const data = await loadAuthData()
-    const entry = data.openai as Partial<OpenAIAuth> | undefined
-    if (entry?.type === "oauth" && typeof entry.access === "string") {
-      return entry as OpenAIAuth
+    const connection = await context.integration.connection.active("openai")
+    if (!connection) return undefined
+    const credential = await context.integration.connection.resolve(connection)
+    if (
+      credential?.type !== "oauth" ||
+      !["chatgpt-browser", "chatgpt-headless"].includes(credential.methodID) ||
+      !credential.access
+    ) {
+      return undefined
+    }
+    const metadata = credential.metadata ?? {}
+    const accountId = metadata.accountId ?? metadata.account_id
+    return {
+      type: "oauth",
+      access: credential.access,
+      ...(typeof accountId === "string" && accountId ? { accountId } : {}),
     }
   } catch {
+    // A broken connection is not a reason to try legacy credential files.
     return undefined
   }
-  return undefined
 }

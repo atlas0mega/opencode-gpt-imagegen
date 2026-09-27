@@ -1,52 +1,34 @@
-import { afterEach, beforeEach, expect, mock, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import type { ToolContext } from "@opencode-ai/plugin"
-import { askExternalDirectory } from "../../src/permissions"
+import { requireLocalPaths } from "../../src/permissions"
 
 let dir: string
-
 beforeEach(async () => {
-  dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "permissions-")))
+  dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "permissions-v2-")))
 })
-
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
-test("accepts either canonical root, but not sibling prefixes or paths outside both", async () => {
-  const directory = path.join(dir, "project")
-  const worktree = path.join(dir, "worktree")
-  await mkdir(directory)
-  await mkdir(worktree)
-  await symlink(directory, path.join(dir, "project-alias"))
-  await symlink(worktree, path.join(dir, "worktree-alias"))
-  const ask = mock(async (_request: Parameters<ToolContext["ask"]>[0]) => {})
-  const ctx: ToolContext = {
-    directory: path.join(dir, "project-alias"),
-    worktree: path.join(dir, "worktree-alias"),
-    abort: new AbortController().signal,
-    ask,
-    sessionID: "test",
-    messageID: "test",
-    agent: "test",
-    metadata() {},
-  }
-  await askExternalDirectory(ctx, [
-    directory,
-    path.join(directory, "new/image.png"),
-    worktree,
-    path.join(worktree, "ref.png"),
-  ])
-  expect(ask).not.toHaveBeenCalled()
-  const external = [path.join(dir, "project-other/image.png"), path.join(dir, "worktree-other/ref.png")]
-  await askExternalDirectory(ctx, [...external, external[0], path.join(directory, "image.png")])
-  expect(ask).toHaveBeenCalledTimes(1)
-  expect(ask.mock.calls[0][0]).toEqual({
-    permission: "external_directory",
-    patterns: external,
-    always: [],
-    metadata: { paths: external },
-  })
+test("canonical project paths stay local; sibling prefixes and symlink escapes fail closed", async () => {
+  const project = path.join(dir, "project")
+  const outside = path.join(dir, "project-other")
+  await mkdir(project)
+  await mkdir(outside)
+  await symlink(project, path.join(dir, "project-alias"))
+  await symlink(outside, path.join(project, "escape"))
+  await requireLocalPaths(path.join(dir, "project-alias"), [project, path.join(project, "new/image.png")])
+  await expect(requireLocalPaths(project, [path.join(outside, "image.png")])).rejects.toThrow("outside")
+  await expect(requireLocalPaths(project, [outside])).rejects.toThrow("outside")
+  await expect(requireLocalPaths(project, [await realpath(path.join(project, "escape"))])).rejects.toThrow("outside")
+  await expect(requireLocalPaths(project, [project, outside])).rejects.toThrow("outside")
+})
+
+test("explicit owner option can allow external paths; default never prompts itself", async () => {
+  const project = path.join(dir, "project")
+  await mkdir(project)
+  await requireLocalPaths(project, [path.join(dir, "external", "image.png")], true)
+  await expect(requireLocalPaths(project, [path.join(dir, "external", "image.png")])).rejects.toThrow("outside")
 })

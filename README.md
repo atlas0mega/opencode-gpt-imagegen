@@ -1,120 +1,86 @@
-# opencode-gpt-imagegen
+# OpenCode V2 GPT Image Generation
 
-## Local Fork: References, Materials, and Optional Blender
+This fork provides two V2 tools: `gpt_imagegen` for reference-guided raster
+image generation through an **active ChatGPT OAuth connection**, and optional
+`gpt_blender` for a local starter primitive with supplied texture maps. It has
+no V1 entrypoint, legacy credential-file reader, Blender MCP, or paid mesh API.
 
-This fork adds ordered role-based image references, upload/read/write permissions,
-bounded requests, and non-overwriting output. It includes the
-[image/material development skill](skills/image-material-development/SKILL.md)
-and the optional `gpt_blender` tool. See [security boundaries](SECURITY-REVIEW.md).
+## Install locally
 
-`gpt_blender` uses local Blender, not a Blender MCP or paid mesh service. It requests
-human approval via `blender_execute` before running. Blender must already be on
-PATH; nothing installs it automatically. It produces UV starter primitives
-(plane/cube/sphere), assigns optional albedo/roughness/metallic/OpenGL normal maps,
-and saves .blend, .glb, preview PNG, and a manifest in a unique output subdirectory.
-It is not image-to-mesh reconstruction, general modeling, or PBR-map generation.
+Build with Bun (the two-day release-age policy in `bunfig.toml` stays enabled):
 
-Build this fork with `bun install --frozen-lockfile --ignore-scripts` and
-`bun run build`, then register the absolute path to its `dist/index.js`:
+```sh
+bun install --frozen-lockfile
+bun run typecheck
+bun run test
+bun run build
+```
 
-```json
+Add the checkout **directory** to OpenCode V2's global `opencode.jsonc`, merging
+with any existing plugins and settings:
+
+```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["file:///absolute/path/to/opencode-gpt-imagegen/dist/index.js"],
-  "skills": {"paths": ["/absolute/path/to/opencode-gpt-imagegen/skills"]},
-  "permission": {
-    "*blender*": "ask",
-    "gpt_imagegen": "ask",
-    "gpt_blender": "ask",
-    "blender_execute": "ask"
-  }
+  "plugins": ["/absolute/path/to/opencode-gpt-imagegen"],
+  "permissions": [
+    { "action": "gpt_imagegen", "resource": "*", "effect": "ask" },
+    { "action": "gpt_blender", "resource": "*", "effect": "ask" }
+  ],
+  "skills": ["/absolute/path/to/opencode-gpt-imagegen/skills"]
 }
 ```
 
-Merge these entries with existing config; do not replace your provider settings.
-Restart OpenCode. Do not use auto-approval modes or override these permissions if
-human approval is required. MCP/provider setup and paid jobs require separate
-approval. The package is private to prevent accidental upstream npm publication.
+Use the V2 permission prompt's **Allow once** or **Allow always** choice for
+each tool. The latter avoids repeated prompts; it does not disable this
+plugin's canonical path checks. This repo is private to prevent accidental
+publication under the upstream npm name. Do not enable the package globally
+until you have verified V2 OAuth, tool permission, cancellation and the
+installed artifact in your environment.
 
-The upstream documentation below describes the original package. Its npm install
-snippet installs upstream, not this fork.
+### Paths and external override
 
-<p align="center"><img src="./ogp.png" alt="opencode-gpt-imagegen × gpt-image-2" /></p>
+By default, output and input paths must remain within the **executing
+session's** OpenCode location, not the plugin's load directory. Symlink escapes
+and sibling paths are rejected before image upload or Blender execution. If
+the owner knowingly needs files outside the session location, use the V2
+plugin options object:
 
-> Bring [**ChatGPT Images 2.0**](https://openai.com/index/introducing-chatgpt-images-2-0/) (`gpt-image-2`) to [OpenCode](https://opencode.ai). Use it through your **ChatGPT subscription** (no API costs!) or through the **OpenAI API** — your call.
-
-[![OpenCode plugin](https://img.shields.io/badge/OpenCode-plugin-blue.svg)](https://opencode.ai/docs/plugins/)
-[![npm version](https://img.shields.io/npm/v/opencode-gpt-imagegen.svg)](https://www.npmjs.com/package/opencode-gpt-imagegen)
-[![CI](https://github.com/yuji-hatakeyama/opencode-gpt-imagegen/actions/workflows/ci.yml/badge.svg)](https://github.com/yuji-hatakeyama/opencode-gpt-imagegen/actions/workflows/ci.yml)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-
-| Auth path | Status | Billing |
-|---|---|---|
-| **ChatGPT subscription** (OAuth) | **Available now in v0.1.0** | **No extra cost** — comes out of your existing Plus / Pro / Business plan |
-| **OpenAI API key** | **Coming soon in v0.2.0** | Pay-per-image against your API credits, with `generate` + `edit` support |
-
-## Highlights
-
-- **Subscription-friendly.** Generations ride on the same Codex backend channel OpenCode already uses for ChatGPT subscription chat — billed against your ChatGPT plan, not your API credits.
-- **Reference images.** Pass any number of input images alongside the prompt for style guidance, edit targets, or compositing inputs.
-
-## Installation
-
-Add this plugin to your [OpenCode config](https://opencode.ai/docs/plugins/). For example, in `opencode.json`:
-
-```json
+```jsonc
 {
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-gpt-imagegen"]
+  "plugins": [{
+    "package": "/absolute/path/to/opencode-gpt-imagegen",
+    "options": { "allow_external_paths": true }
+  }]
 }
 ```
 
-OpenCode auto-installs the package via Bun on next launch — no separate `npm install` step is needed. The plugin requires OpenCode to be authenticated with ChatGPT.
+This override is broad for that plugin instance; it is **not** a per-path
+approval. Keep the tool permission at `ask` if a human must approve each
+invocation, or disable the override. Do not use global auto-approval when
+human authorization is required.
 
-## Usage
+## `gpt_imagegen`
 
-Just ask your agent in natural language and `gpt_imagegen` will be picked up.
+The tool takes `prompt`, `out`, `quality` (`low`, `medium`, `high`, or `auto`),
+optional `size`, and up to eight ordered references. Use `images` for simple
+legacy path lists **or** `references` with a `path`, a role (`edit-target`,
+`style`, `subject`, `material`, or `composition`), and optional `preserve`
+guidance; never both. References are uploaded to OpenAI's hosted Codex image
+generation endpoint. The tool writes one PNG per call using exclusive
+creation and versions existing names (`-v2` through `-v999`) rather than
+overwriting. Requests are cancellable and bounded; subscription usage and
+provider behavior depend on your account and OpenAI policy.
 
-The three examples below are the **actual outputs of this repo's e2e test suite** — see [`tests/e2e/subscription.test.ts`](./tests/e2e/subscription.test.ts) for the exact prompts and assertions.
+## `gpt_blender`
 
-### Example A — generate
+Requires Blender already on `PATH` and the separate `gpt_blender` tool
+permission. The tool accepts a safe name, an existing output directory, a UV
+`plane`, `cube`, or `sphere`, and optional local albedo, roughness, metallic,
+and OpenGL/+Y normal textures. It launches Blender with factory startup,
+automatic script execution disabled, a fixed bundled script and a 120-second
+limit. A unique subdirectory receives `.blend`, `.glb`, a preview PNG, and a
+manifest. It neither reconstructs meshes nor creates coherent PBR maps.
 
-> Draw a man in a navy samue with a red hachimaki, standing in a garden full of cherry blossoms. 90s anime style. Save it as `character.png`, portrait 1024x1536.
-
-<p align="center"><img src="./assets/character.png" alt="Example A output: man in samue, portrait" width="320" /></p>
-
-### Example B — auto-versioning
-
-`gpt_imagegen` never overwrites an existing file: when the `out` path is already taken, it picks `-v2`, `-v3`, … instead.
-
-> Now do the same path but make it a woman in a yellow yukata holding a red wagasa, in a moonlit garden with fireflies. Landscape 1536x1024.
-
-The previous `character.png` is left untouched; the new image lands at `character-v2.png`.
-
-<p align="center"><img src="./assets/character-v2.png" alt="Example B output: woman in yukata, landscape (auto-versioned)" width="480" /></p>
-
-### Example C — feed existing image files as input
-
-Pass any number of image paths via the `images` argument and the model uses them as references for the next generation — for style guidance, characters to keep, scenes to extend, and so on.
-
-> Take `character.png` and `character-v2.png` and put both characters together on the engawa of an old Japanese house, smiling at the viewer. 2048x1152, same 90s anime style.
-
-<p align="center"><img src="./assets/together.png" alt="Example C output: both characters composed onto an engawa" width="640" /></p>
-
-## Roadmap
-
-| Version | Auth path | Scope | Status |
-|---|---|---|---|
-| **v0.1.0** | ChatGPT subscription | `gpt_imagegen` with optional reference images (generation + reference-guided edits via prompting) | **Released** |
-| **v0.2.0** | OpenAI API key | Adds the API-key billing path: both `generate` (`/v1/images/generations`) and `edit` (`/v1/images/edits`) with reference images | Next |
-| **v0.3.0** | OpenAI API key | Adds **pixel-precise mask inpainting** via `/v1/images/edits` (binary PNG alpha mask) | Planned |
-
-## How it works
-
-OpenCode already talks to the OpenAI Codex backend to power ChatGPT subscription chat. This plugin reuses that same endpoint, attaching the hosted `image_generation` tool to a single-turn request, then writes the returned PNG to disk. Auth is read from OpenCode's standard `auth.json`; no new credential surface is introduced.
-
-## Disclaimer
-
-This is an **unofficial, third-party** plugin, not affiliated with or endorsed by OpenAI or OpenCode.
-
-It uses the same Codex backend endpoint OpenCode itself calls for ChatGPT subscription chat — this plugin just adds the hosted `image_generation` tool to that conversation. Use must comply with OpenAI's [Terms of Use](https://openai.com/policies/row-terms-of-use/) and [Usage Policies](https://openai.com/policies/usage-policies/).
+See [the current security review](SECURITY-REVIEW.md). This is an unofficial
+third-party integration; follow OpenAI's Terms of Use and Usage Policies.

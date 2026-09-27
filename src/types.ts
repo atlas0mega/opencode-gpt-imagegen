@@ -1,4 +1,4 @@
-// Minimal subset of OpenCode auth.json's openai OAuth entry required by this plugin.
+// Minimal subset of the active V2 OpenAI OAuth credential required by Codex.
 export type OpenAIAuth = { type: "oauth"; access: string; accountId?: string }
 
 export type ImageReference = {

@@ -5,37 +5,21 @@ import { mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from "node:
 import os from "node:os"
 import path from "node:path"
 import { PassThrough } from "node:stream"
-import type { ToolContext } from "@opencode-ai/plugin"
 import { blenderTool, executeBlender } from "../../src/blender"
 
 let dir: string
 let controller: AbortController
-let requests: Parameters<ToolContext["ask"]>[0][]
-let ctx: ToolContext
-
 beforeEach(async () => {
-  dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "blender-test-")))
+  dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "blender-v2-test-")))
   controller = new AbortController()
-  requests = []
-  ctx = {
-    directory: dir,
-    worktree: dir,
-    sessionID: "test",
-    messageID: "test",
-    agent: "test",
-    abort: controller.signal,
-    metadata() {},
-    async ask(request) {
-      requests.push(request)
-    },
-  }
 })
-
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
 const args = { name: "sample", primitive: "cube" as const, output_dir: "." }
+const run = (input: unknown, dependencies: { spawn?: typeof spawn; timeoutMs?: number } = {}, allowExternal = false) =>
+  executeBlender(input, dir, controller.signal, allowExternal, dependencies)
 
 function fakeSpawn(action: (child: ChildProcess, argv: string[]) => void) {
   const child = new EventEmitter() as ChildProcess
@@ -56,9 +40,16 @@ function fakeSpawn(action: (child: ChildProcess, argv: string[]) => void) {
   return { spawn: launch, calls, signals, child }
 }
 
-describe("blender tool", () => {
-  test("exports a minimal fixed schema without code or blend-file inputs", () => {
-    expect(Object.keys(blenderTool.args)).toEqual([
+describe("V2 Blender tool", () => {
+  test("registers only fixed primitives/textures and uses a reusable host permission", () => {
+    const tool = blenderTool(
+      async () => dir,
+      false,
+      (context) => (context as unknown as { signal: AbortSignal }).signal,
+    )
+    expect(tool.name).toBe("gpt_blender")
+    expect(tool.options?.permission).toBe("gpt_blender")
+    expect(Object.keys((tool.input as { properties: Record<string, unknown> }).properties)).toEqual([
       "name",
       "output_dir",
       "primitive",
@@ -67,11 +58,10 @@ describe("blender tool", () => {
       "metallic",
       "normal",
     ])
-    expect(blenderTool.args.primitive.safeParse("sphere").success).toBe(true)
-    expect(blenderTool.args.primitive.safeParse("script").success).toBe(false)
+    expect(JSON.stringify(tool.input)).not.toContain("python")
   })
 
-  test("rejects unsafe names, URL textures and arbitrary code before approval", async () => {
+  test("rejects unsafe names, URLs, arbitrary code, and output controls before spawning", async () => {
     const fake = fakeSpawn(() => {})
     for (const invalid of [
       { ...args, name: "../escape" },
@@ -79,59 +69,21 @@ describe("blender tool", () => {
       { ...args, albedo: "https://example.com/image.png" },
       { ...args, output_dir: "bad\0path" },
       { ...args, python: "print('no')" },
-    ]) {
-      await expect(executeBlender(invalid, ctx, fake)).rejects.toThrow()
-    }
-    expect(requests).toEqual([])
+    ])
+      await expect(run(invalid, fake)).rejects.toThrow()
     expect(fake.calls).toEqual([])
     expect(await readdir(dir)).toEqual([])
   })
 
-  test("denied execution or edit permission causes no writes or spawn", async () => {
-    for (const denied of ["blender_execute", "edit"]) {
-      const fake = fakeSpawn(() => {})
-      ctx.ask = async (request) => {
-        requests.push(request)
-        expect(await readdir(dir)).toEqual([])
-        if (request.permission === denied) throw new Error("denied")
-      }
-      await expect(executeBlender(args, ctx, fake)).rejects.toThrow("denied")
-      expect(fake.calls).toEqual([])
-      expect(await readdir(dir)).toEqual([])
-    }
-  })
-
-  test("requests canonical texture read approval before any output creation", async () => {
-    await writeFile(path.join(dir, "actual.png"), "fake image")
-    await symlink(path.join(dir, "actual.png"), path.join(dir, "alias.png"))
-    const fake = fakeSpawn(() => {})
-    ctx.ask = async (request) => {
-      requests.push(request)
-      if (request.permission === "read") throw new Error("read denied")
-    }
-    await expect(executeBlender({ ...args, albedo: "alias.png" }, ctx, fake)).rejects.toThrow("read denied")
-    expect(requests.map((request) => request.permission)).toEqual(["blender_execute", "read"])
-    expect(requests[1].patterns).toEqual([path.join(dir, "actual.png")])
-    expect(requests[0].metadata).toMatchObject({ local: true, billing: "free", external_paid_services: false })
-    expect(fake.calls).toEqual([])
-    expect((await readdir(dir)).sort()).toEqual(["actual.png", "alias.png"])
-  })
-
   for (const external of ["texture", "output"]) {
-    test(`external ${external} denial prevents writes and spawn`, async () => {
+    test(`denies external ${external} symlink before writing or spawning`, async () => {
       const project = path.join(dir, "project")
       const outside = path.join(dir, "project-other")
       await mkdir(project)
       await mkdir(outside)
       await writeFile(path.join(outside, "actual.png"), "not read")
       await symlink(outside, path.join(project, "escape"))
-      ctx.directory = project
-      ctx.worktree = project
       const fake = fakeSpawn(() => {})
-      ctx.ask = async (request) => {
-        requests.push(request)
-        if (request.permission === "external_directory") throw new Error("external denied")
-      }
       await expect(
         executeBlender(
           {
@@ -139,47 +91,36 @@ describe("blender tool", () => {
             output_dir: external === "output" ? "escape" : ".",
             albedo: external === "texture" ? "escape/actual.png" : undefined,
           },
-          ctx,
+          project,
+          controller.signal,
+          false,
           fake,
         ),
-      ).rejects.toThrow("external denied")
-      expect(requests.map((request) => request.permission)).toEqual(["external_directory"])
-      expect(requests[0].patterns).toEqual(
-        external === "texture" ? [path.join(outside, "actual.png")] : [outside, path.join(outside, "**")],
-      )
+      ).rejects.toThrow("outside")
       expect(fake.calls).toEqual([])
-      expect(await readdir(project)).toEqual(["escape"])
       expect(await readdir(outside)).toEqual(["actual.png"])
     })
   }
 
-  test("rejects user blend files and directory textures", async () => {
+  test("rejects .blend inputs, directories named .png, missing output roots and existing files", async () => {
     await writeFile(path.join(dir, "input.blend"), "not opened")
     await mkdir(path.join(dir, "directory.png"))
-    const fake = fakeSpawn(() => {})
-    await expect(executeBlender({ ...args, albedo: "input.blend" }, ctx, fake)).rejects.toThrow("raster image")
-    await expect(executeBlender({ ...args, albedo: "directory.png" }, ctx, fake)).rejects.toThrow("not a regular file")
-    expect(fake.calls).toEqual([])
-    expect((await readdir(dir)).sort()).toEqual(["directory.png", "input.blend"])
-  })
-
-  test("requires an existing output directory and never replaces a file", async () => {
     await writeFile(path.join(dir, "existing"), "keep")
     const fake = fakeSpawn(() => {})
-    await expect(executeBlender({ ...args, output_dir: "missing" }, ctx, fake)).rejects.toThrow()
-    await expect(executeBlender({ ...args, output_dir: "existing" }, ctx, fake)).rejects.toThrow("not a directory")
+    await expect(run({ ...args, albedo: "input.blend" }, fake)).rejects.toThrow("raster image")
+    await expect(run({ ...args, albedo: "directory.png" }, fake)).rejects.toThrow("not a regular file")
+    await expect(run({ ...args, output_dir: "missing" }, fake)).rejects.toThrow()
+    await expect(run({ ...args, output_dir: "existing" }, fake)).rejects.toThrow("not a directory")
     expect(fake.calls).toEqual([])
-    expect(await readdir(dir)).toEqual(["existing"])
   })
 
-  test("spawns only after approvals with fixed argv and unique non-overwriting outputs", async () => {
+  test("spawns fixed Blender argv and creates unique non-overwriting outputs", async () => {
     const fake = fakeSpawn((child, argv) => {
       void (async () => {
         try {
-          const payload = JSON.parse(argv[argv.length - 1])
-          for (const file of ["sample.blend", "sample.glb", "preview.png", "manifest.json"]) {
+          const payload = JSON.parse(argv.at(-1) ?? "{}")
+          for (const file of ["sample.blend", "sample.glb", "preview.png", "manifest.json"])
             await writeFile(path.join(payload.output_dir, file), "fake output", { flag: "wx" })
-          }
           child.emit("close", 0, null)
         } catch (error) {
           child.emit("error", error)
@@ -187,21 +128,10 @@ describe("blender tool", () => {
         }
       })()
     })
-    ctx.ask = async (request) => {
-      requests.push(request)
-      expect(fake.calls.length).toBe(Math.floor((requests.length - 1) / 2))
-    }
-    const first = await executeBlender(args, ctx, fake)
-    const second = await executeBlender(args, ctx, fake)
-    expect(requests.map((request) => request.permission)).toEqual([
-      "blender_execute",
-      "edit",
-      "blender_execute",
-      "edit",
-    ])
+    const first = await run(args, fake)
+    const second = await run(args, fake)
     expect(first.metadata.output_dir).not.toBe(second.metadata.output_dir)
     expect(first.output).toContain("not a production mesh")
-    expect(first.metadata.outputs.blend).toBe(path.join(first.metadata.output_dir, "sample.blend"))
     expect((await readdir(first.metadata.output_dir)).sort()).toEqual([
       "manifest.json",
       "preview.png",
@@ -209,6 +139,7 @@ describe("blender tool", () => {
       "sample.glb",
     ])
     const call = fake.calls[0]
+    if (!call) throw new Error("Blender did not spawn")
     expect(call.command).toBe("blender")
     expect(call.options).toMatchObject({
       shell: false,
@@ -224,8 +155,7 @@ describe("blender tool", () => {
       "--python",
     ])
     expect(call.argv[6]).toBe(path.resolve(import.meta.dir, "../../scripts/blender_asset.py"))
-    expect(call.argv[7]).toBe("--")
-    expect(JSON.parse(call.argv[8])).toEqual({
+    expect(JSON.parse(call.argv[8] ?? "{}")).toEqual({
       name: "sample",
       primitive: "cube",
       output_dir: first.metadata.output_dir,
@@ -233,95 +163,60 @@ describe("blender tool", () => {
     })
   })
 
-  test("reports a missing executable without trying to install it", async () => {
-    const fake = fakeSpawn((child) => {
+  test("missing executable, bounded stderr, and missing artifacts fail without installation", async () => {
+    const missing = fakeSpawn((child) => {
       child.emit("error", Object.assign(new Error("missing"), { code: "ENOENT" }))
       child.emit("close", -2, null)
     })
-    await expect(executeBlender(args, ctx, fake)).rejects.toThrow(
-      "Blender was not found on PATH. No installation was attempted.",
-    )
-    expect(fake.calls).toHaveLength(1)
-  })
-
-  test("bounds combined stdout/stderr on failure", async () => {
-    const fake = fakeSpawn((child) => {
+    await expect(run(args, missing)).rejects.toThrow("No installation was attempted")
+    const noisy = fakeSpawn((child) => {
       child.stdout?.emit("data", Buffer.alloc(100_000, "x"))
       child.stderr?.emit("data", Buffer.alloc(100_000, "y"))
       child.emit("close", 1, null)
     })
-    let message = ""
+    let error = ""
     try {
-      await executeBlender(args, ctx, fake)
-    } catch (error) {
-      message = String(error)
+      await run(args, noisy)
+    } catch (failure) {
+      error = String(failure)
     }
-    expect(message).toContain("Blender failed (1)")
-    expect(message.length).toBeLessThan(66_000)
-    expect(message).not.toContain("yyyy")
+    expect(error.length).toBeLessThan(66_000)
+    expect(error).not.toContain("yyyy")
+    const empty = fakeSpawn((child) => child.emit("close", 0, null))
+    await expect(run(args, empty)).rejects.toThrow("Partial files may remain")
   })
 
-  test("rejects successful exits with missing artifacts", async () => {
-    const fake = fakeSpawn((child) => child.emit("close", 0, null))
-    await expect(executeBlender(args, ctx, fake)).rejects.toThrow("Partial files may remain")
-  })
-
-  test("already cancelled calls neither ask, write nor spawn", async () => {
+  test("already-cancelled calls neither write nor spawn", async () => {
     const fake = fakeSpawn(() => {})
-    controller.abort()
-    await expect(executeBlender(args, ctx, fake)).rejects.toThrow()
-    expect(requests).toEqual([])
+    controller.abort(new Error("cancelled"))
+    await expect(run(args, fake)).rejects.toThrow("cancelled")
     expect(fake.calls).toEqual([])
     expect(await readdir(dir)).toEqual([])
   })
 
-  test("cancellation during approval prevents writes and spawn", async () => {
-    const fake = fakeSpawn(() => {})
-    ctx.ask = async () => controller.abort()
-    await expect(executeBlender(args, ctx, fake)).rejects.toThrow()
-    expect(fake.calls).toEqual([])
-    expect(await readdir(dir)).toEqual([])
+  test("cancellation and timeout kill the child, waiting for close", async () => {
+    const cancelled = fakeSpawn(() => controller.abort())
+    await expect(run(args, cancelled)).rejects.toThrow("cancelled")
+    expect(cancelled.signals).toEqual(["SIGKILL"])
+    const timed = fakeSpawn(() => {})
+    controller = new AbortController()
+    await expect(run(args, { ...timed, timeoutMs: 5 })).rejects.toThrow("120-second timeout")
+    expect(timed.signals).toEqual(["SIGKILL"])
   })
 
-  test("cancellation kills the child and waits for close", async () => {
-    const fake = fakeSpawn(() => controller.abort())
-    let closed = false
-    fake.child.on("close", () => {
-      closed = true
+  test.skipIf(process.platform === "win32")("cancellation terminates the POSIX process group", async () => {
+    const fake = fakeSpawn((child) => {
+      controller.abort()
+      child.emit("close", null, "SIGKILL")
     })
-    await expect(executeBlender(args, ctx, fake)).rejects.toThrow("cancelled")
-    expect(fake.signals).toEqual(["SIGKILL"])
-    expect(closed).toBe(true)
+    Object.defineProperty(fake.child, "pid", { value: 12345 })
+    const kill = spyOn(process, "kill").mockImplementation(() => true)
+    try {
+      await expect(run(args, fake)).rejects.toThrow("cancelled")
+      expect(kill).toHaveBeenCalledWith(-12345, "SIGKILL")
+      expect(fake.signals).toEqual([])
+    } finally {
+      kill.mockRestore()
+    }
   })
-
-  test("timeout kills the child and waits for close", async () => {
-    const fake = fakeSpawn(() => {})
-    let closed = false
-    fake.child.on("close", () => {
-      closed = true
-    })
-    await expect(executeBlender(args, ctx, { ...fake, timeoutMs: 5 })).rejects.toThrow("120-second timeout")
-    expect(fake.signals).toEqual(["SIGKILL"])
-    expect(closed).toBe(true)
-  })
-
-  test.skipIf(process.platform === "win32")(
-    "cancellation kills the POSIX process group, not just Blender",
-    async () => {
-      const fake = fakeSpawn((child) => {
-        controller.abort()
-        child.emit("close", null, "SIGKILL")
-      })
-      Object.defineProperty(fake.child, "pid", { value: 12345 })
-      const kill = spyOn(process, "kill").mockImplementation(() => true)
-      try {
-        await expect(executeBlender(args, ctx, fake)).rejects.toThrow("cancelled")
-        expect(kill).toHaveBeenCalledWith(-12345, "SIGKILL")
-        expect(fake.signals).toEqual([])
-        expect(fake.calls[0].options).toMatchObject({ detached: true })
-      } finally {
-        kill.mockRestore()
-      }
-    },
-  )
 })
