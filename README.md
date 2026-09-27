@@ -33,7 +33,10 @@ with any existing plugins and settings:
 
 Use the V2 permission prompt's **Allow once** or **Allow always** choice for
 each tool. The latter avoids repeated prompts; it does not disable this
-plugin's canonical path checks. This repo is private to prevent accidental
+plugin's canonical path checks. Tool registration only filters catalog visibility;
+this plugin also requires the host's `ctx.permission.assert` leaf API before OAuth
+or Blender execution. Hosts without it fail closed rather than bypassing `ask`.
+This repo is private to prevent accidental
 publication under the upstream npm name. Do not enable the package globally
 until you have verified V2 OAuth, tool permission, cancellation and the
 installed artifact in your environment.

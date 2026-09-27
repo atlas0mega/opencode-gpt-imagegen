@@ -7,6 +7,7 @@ import { callViaCodexResponses } from "./codex"
 import { readReferenceImages, resolveReferences } from "./input-image"
 import { resolveOutputPath, saveGeneratedImage } from "./output-image"
 import { requireLocalPaths } from "./permissions"
+import { assertToolPermission } from "./tool-permission"
 
 const argsSchema = z
   .object({
@@ -30,8 +31,8 @@ const argsSchema = z
   .strict()
 
 // The published package targets a V2 host with cancellable Promise tool
-// executors. @opencode/plugin 2.0.10 is pinned for Bun's two-day release-age
-// policy; its ToolContext type predates the 2.0.18 signal field.
+// executors and leaf permission assertions. @opencode/plugin 2.0.10 is pinned
+// for Bun's two-day release-age policy; its types predate those host capabilities.
 export function toolSignal(context: ToolContext): AbortSignal {
   const signal = (context as ToolContext & { signal?: AbortSignal }).signal
   if (!signal) throw new Error("OpenCode V2.0.18 or newer is required for cancellable image tools.")
@@ -98,6 +99,7 @@ export default Plugin.define({
             [...references.map((reference) => reference.path), out],
             allowExternalPaths,
           )
+          await assertToolPermission(ctx.permission, context, "gpt_imagegen", signal)
           signal.throwIfAborted()
           const auth = await loadOpenAIAuth(ctx)
           if (!auth) throw new Error("An active OpenAI ChatGPT OAuth connection is required.")
@@ -128,7 +130,7 @@ export default Plugin.define({
           }
         },
       })
-      editor.add(blenderTool(sessionDirectory, allowExternalPaths, toolSignal))
+      editor.add(blenderTool(sessionDirectory, allowExternalPaths, toolSignal, ctx.permission))
     })
   },
 })

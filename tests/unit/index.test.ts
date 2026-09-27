@@ -24,6 +24,18 @@ type ToolFixture = {
 }
 let tools: Map<string, ToolFixture>
 let resolvedSessionIDs: string[]
+let assertions: {
+  action: string
+  sessionID: string
+  agent: string
+  resources: string[]
+  save: string[]
+  source: unknown
+}[]
+let permissionGateway: {
+  assert?: (input: (typeof assertions)[number], options?: { signal?: AbortSignal }) => Promise<void>
+}
+let denyPermission: boolean
 const originalFetch = globalThis.fetch
 
 beforeEach(async () => {
@@ -32,9 +44,19 @@ beforeEach(async () => {
   await fs.mkdir(project)
   tools = new Map()
   resolvedSessionIDs = []
+  assertions = []
+  denyPermission = false
+  permissionGateway = {
+    assert: async (input, options) => {
+      options?.signal?.throwIfAborted()
+      assertions.push(input)
+      if (denyPermission) throw new Error("fixture permission denied")
+    },
+  }
   const ctx = {
     location: { directory: path.join(dir, "plugin-instance-not-session") },
     options: {},
+    permission: permissionGateway,
     session: {
       get: async ({ sessionID }: { sessionID: string }) => {
         resolvedSessionIDs.push(sessionID)
@@ -150,6 +172,16 @@ test("V2 tool preserves ordered references, exact prompt and non-overwriting out
   const result = await imageTool().execute(args, context())
   const output = path.join(project, "real", "new", "result.png")
   expect(resolvedSessionIDs).toEqual(["ses_active"])
+  expect(assertions).toMatchObject([
+    {
+      sessionID: "ses_active",
+      agent: "build",
+      action: "gpt_imagegen",
+      resources: ["*"],
+      save: ["*"],
+      source: { type: "tool", messageID: "msg_1", id: "call_1" },
+    },
+  ])
   expect(result).toMatchObject({
     metadata: { out: output, billing: "subscription", versioned: false, width: 1, height: 1 },
   })
@@ -202,4 +234,22 @@ test("missing V2 abort signal fails closed instead of running an uncancellable i
     imageTool().execute({ prompt: "cat", out: "cat.png", quality: "auto" }, { sessionID: "ses_active" }),
   ).rejects.toThrow("V2.0.18")
   expect(fetchMock).not.toHaveBeenCalled()
+})
+
+test("denied or unsupported host authorization never reaches OAuth, network, or output", async () => {
+  const fetchMock = mock(async () => new Response())
+  globalThis.fetch = fetchMock as unknown as typeof fetch
+  denyPermission = true
+  await expect(imageTool().execute({ prompt: "cat", out: "denied.png", quality: "low" }, context())).rejects.toThrow(
+    "fixture permission denied",
+  )
+  expect(assertions).toHaveLength(1)
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect(await fs.readdir(project)).toEqual([])
+  permissionGateway.assert = undefined
+  await expect(
+    imageTool().execute({ prompt: "cat", out: "unsupported.png", quality: "low" }, context()),
+  ).rejects.toThrow("does not support tool permission assertions")
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect(await fs.readdir(project)).toEqual([])
 })

@@ -2,9 +2,11 @@ import { spawn } from "node:child_process"
 import { mkdtemp, realpath, stat } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import type { Context } from "@opencode/plugin/promise/plugin"
 import type { ToolContext, Info as ToolInfo } from "@opencode/plugin/promise/tool"
 import { z } from "zod"
 import { requireLocalPaths } from "./permissions"
+import { assertToolPermission } from "./tool-permission"
 
 const localPath = z
   .string()
@@ -191,6 +193,7 @@ export function blenderTool(
   sessionDirectory: (sessionID: string) => Promise<string>,
   allowExternalPaths: boolean,
   toolSignal: (context: ToolContext) => AbortSignal,
+  permission: Context["permission"],
 ): ToolInfo {
   return {
     name: "gpt_blender",
@@ -219,6 +222,7 @@ export function blenderTool(
     async execute(raw, context) {
       const signal = toolSignal(context)
       signal.throwIfAborted()
+      await assertToolPermission(permission, context, "gpt_blender", signal)
       const result = await executeBlender(raw, await sessionDirectory(context.sessionID), signal, allowExternalPaths)
       return { content: result.output, metadata: result.metadata }
     },
